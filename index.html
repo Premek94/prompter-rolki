@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Prompter rolki</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #000; color: #fff; font-family: -apple-system, system-ui, sans-serif; overflow: hidden; }
+  #edit { position: absolute; inset: 0; padding: env(safe-area-inset-top) 14px 14px; display: flex; flex-direction: column; gap: 10px; background: #111; }
+  #edit h1 { font-size: 18px; margin: 14px 0 0; }
+  #edit small { color: #aaa; line-height: 1.4; }
+  #src { flex: 1; width: 100%; background: #1c1c1e; color: #fff; border: 1px solid #333; border-radius: 10px; padding: 12px; font-size: 16px; }
+  button { font-size: 17px; padding: 12px 16px; border: 0; border-radius: 12px; background: #2f6bff; color: #fff; }
+  button.sec { background: #3a3a3c; }
+  button.rec { background: #e5322d; }
+  #run { position: absolute; inset: 0; display: none; }
+  video#cam { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); background: #000; }
+  #shade { position: absolute; inset: 0; background: rgba(0,0,0,.55); }
+  #view { position: absolute; left: 0; right: 0; top: env(safe-area-inset-top); bottom: 132px; overflow: hidden; -webkit-mask-image: linear-gradient(transparent 0, #000 12%, #000 88%, transparent 100%); mask-image: linear-gradient(transparent 0, #000 12%, #000 88%, transparent 100%); }
+  #text { padding: 38vh 18px 60vh; font-size: 34px; line-height: 1.45; font-weight: 600; text-align: center; will-change: transform; }
+  #text .acc { color: #ffd60a; font-weight: 800; }
+  #text .tone { display: inline-block; font-size: .55em; font-weight: 700; color: #0a0a0a; background: #64d2ff; border-radius: 8px; padding: 1px 8px; vertical-align: middle; margin: 0 4px; }
+  #text .pause { display: inline-block; color: #ff9f0a; font-weight: 800; margin: 0 6px; }
+  #line { position: absolute; left: 0; right: 0; top: calc(env(safe-area-inset-top) + 36%); height: 2px; background: rgba(255,255,255,.25); pointer-events: none; }
+  #bar { position: absolute; left: 0; right: 0; bottom: 0; padding: 10px 14px calc(10px + env(safe-area-inset-bottom)); background: rgba(0,0,0,.75); display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; align-items: center; }
+  #bar label { font-size: 12px; color: #bbb; display: flex; flex-direction: column; gap: 2px; }
+  #bar input[type=range] { width: 100%; }
+  #status { grid-column: 1 / -1; font-size: 13px; color: #bbb; text-align: center; min-height: 16px; }
+  #done { position: absolute; inset: 0; display: none; background: #111; padding: env(safe-area-inset-top) 14px 14px; flex-direction: column; gap: 10px; }
+  #done video { width: 100%; flex: 1; min-height: 0; background: #000; border-radius: 10px; }
+</style>
+</head>
+<body>
+
+<div id="edit">
+  <h1>Prompter rolki</h1>
+  <small>
+    Znaczniki: <b>WIELKIE LITERY</b> = akcent (żółty) · <b>//</b> = pauza (przewijanie staje na chwilę) · <b>[ciszej]</b> = ton (niebieska etykieta).<br>
+    Tekst zapisuje się tylko w tym telefonie.
+  </small>
+  <textarea id="src" spellcheck="false"></textarea>
+  <button id="go">Dalej: kamera i prompter</button>
+</div>
+
+<div id="run">
+  <video id="cam" playsinline muted autoplay></video>
+  <div id="shade"></div>
+  <div id="view"><div id="text"></div></div>
+  <div id="line"></div>
+  <div id="bar">
+    <label>Tempo<input id="speed" type="range" min="10" max="200" value="55"></label>
+    <label>Litery<input id="size" type="range" min="22" max="56" value="34"></label>
+    <label>Pauza //<input id="hold" type="range" min="0" max="20" value="7"></label>
+    <button id="rec" class="rec">Nagrywaj</button>
+    <button id="play" class="sec">Start tekstu</button>
+    <button id="back" class="sec">Tekst</button>
+    <div id="status"></div>
+  </div>
+</div>
+
+<div id="done">
+  <video id="out" controls playsinline></video>
+  <button id="save">Zapisz / udostępnij</button>
+  <button id="again" class="sec">Nagraj jeszcze raz</button>
+</div>
+
+<script>
+(function () {
+  var SAMPLE = "Wklej tutaj swój tekst.\n[spokojnie, wolno]\nWIELKIE LITERY to akcent. // Dwa ukośniki to pauza.\n[ciszej]\nNawias kwadratowy to wskazówka tonu.\n";
+  var $ = function (id) { return document.getElementById(id); };
+  var src = $('src');
+  src.value = localStorage.getItem('prompter_tekst') || SAMPLE;
+
+  function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+  var UP = 'A-ZĄĆĘŁŃÓŚŹŻ';
+  var accRe = new RegExp('(^|[^' + UP + 'a-ząćęłńóśźż0-9])([' + UP + ']{2,}[' + UP + '0-9-]*)(?![a-ząćęłńóśźż])', 'g');
+
+  function render(raw) {
+    var html = esc(raw)
+      .replace(/\[([^\]]+)\]/g, '\u0001$1\u0002')
+      .replace(/\/\//g, '\u0003');
+    html = html.replace(accRe, function (m, pre, w) { return pre + '<span class="acc">' + w + '</span>'; });
+    html = html.replace(/\u0001([^\u0002]+)\u0002/g, '<span class="tone">$1</span>')
+               .replace(/\u0003/g, '<span class="pause">//</span>')
+               .replace(/\n/g, '<br>');
+    $('text').innerHTML = html;
+  }
+
+  var stream = null, rec = null, chunks = [], blobOut = null;
+  var y = 0, playing = false, last = 0, holdUntil = 0, passed = [];
+  var raf = 0;
+
+  function status(t) { $('status').textContent = t || ''; }
+
+  function viewH() { return $('view').clientHeight; }
+  function maxY() { return $('text').offsetHeight - viewH(); }
+  function lineY() { return viewH() * 0.36 - 0; }
+
+  function frame(ts) {
+    raf = requestAnimationFrame(frame);
+    if (!last) last = ts;
+    var dt = (ts - last) / 1000; last = ts;
+    if (!playing) return;
+    if (ts < holdUntil) return;
+    y += parseFloat($('speed').value) * dt;
+    if (y >= maxY()) { y = maxY(); setPlaying(false); status('Koniec tekstu'); }
+    $('text').style.transform = 'translateY(' + (-y) + 'px)';
+    var ps = $('text').querySelectorAll('.pause');
+    for (var i = 0; i < ps.length; i++) {
+      if (passed[i]) continue;
+      var top = ps[i].offsetTop - y;
+      if (top <= lineY()) {
+        passed[i] = true;
+        holdUntil = ts + parseFloat($('hold').value) * 100;
+        break;
+      }
+    }
+  }
+
+  function setPlaying(v) {
+    playing = v;
+    $('play').textContent = v ? 'Stop tekstu' : 'Start tekstu';
+  }
+
+  function resetScroll() { y = 0; passed = []; holdUntil = 0; $('text').style.transform = 'translateY(0)'; setPlaying(false); }
+
+  $('size').oninput = function () { $('text').style.fontSize = this.value + 'px'; };
+  $('play').onclick = function () { setPlaying(!playing); };
+  $('view').onclick = function () { setPlaying(!playing); };
+
+  $('go').onclick = async function () {
+    localStorage.setItem('prompter_tekst', src.value);
+    render(src.value);
+    $('edit').style.display = 'none';
+    $('run').style.display = 'block';
+    resetScroll();
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      status('Brak dostępu do kamery: strona musi być otwarta przez https.');
+      return;
+    }
+    try {
+      if (!stream) {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 1080 }, height: { ideal: 1920 } },
+          audio: true
+        });
+      }
+      $('cam').srcObject = stream;
+      status('Gotowe. Dotknij tekstu, żeby ruszył.');
+    } catch (e) {
+      status('Kamera niedostępna: ' + e.name + '. Pozwól w ustawieniach Safari.');
+    }
+  };
+
+  $('back').onclick = function () {
+    if (rec && rec.state === 'recording') return status('Najpierw zatrzymaj nagrywanie.');
+    resetScroll();
+    $('run').style.display = 'none';
+    $('edit').style.display = 'flex';
+  };
+
+  function pickMime() {
+    var c = ['video/mp4', 'video/webm;codecs=vp9,opus', 'video/webm'];
+    for (var i = 0; i < c.length; i++) {
+      if (window.MediaRecorder && MediaRecorder.isTypeSupported(c[i])) return c[i];
+    }
+    return '';
+  }
+
+  $('rec').onclick = function () {
+    if (rec && rec.state === 'recording') { rec.stop(); return; }
+    if (!stream) return status('Brak kamery.');
+    if (!window.MediaRecorder) return status('Ta przeglądarka nie nagrywa.');
+    chunks = [];
+    var mime = pickMime();
+    try { rec = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); }
+    catch (e) { return status('Nagrywanie nie ruszyło: ' + e.name); }
+    rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+    rec.onstop = function () {
+      setPlaying(false);
+      blobOut = new Blob(chunks, { type: rec.mimeType || mime || 'video/mp4' });
+      $('out').src = URL.createObjectURL(blobOut);
+      $('run').style.display = 'none';
+      $('done').style.display = 'flex';
+      $('rec').textContent = 'Nagrywaj';
+    };
+    rec.start(1000);
+    $('rec').textContent = 'Stop nagrania';
+    resetScroll();
+    status('Nagrywam (' + (rec.mimeType || 'domyślny format') + '). Dotknij tekstu, żeby ruszył.');
+  };
+
+  $('save').onclick = async function () {
+    if (!blobOut) return;
+    var ext = blobOut.type.indexOf('mp4') >= 0 ? 'mp4' : 'webm';
+    var f = new File([blobOut], 'rolka_' + Date.now() + '.' + ext, { type: blobOut.type });
+    if (navigator.canShare && navigator.canShare({ files: [f] })) {
+      try { await navigator.share({ files: [f] }); return; } catch (e) { /* anulowano */ }
+    }
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blobOut); a.download = f.name; a.click();
+  };
+
+  $('again').onclick = function () {
+    $('done').style.display = 'none';
+    $('run').style.display = 'block';
+    resetScroll();
+    status('Gotowe. Dotknij tekstu, żeby ruszył.');
+  };
+
+  raf = requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
